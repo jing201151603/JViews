@@ -78,7 +78,7 @@ public class JLineChart extends View {
         paint.setStrokeWidth(dpToPx(1));
         paint.setStyle(Paint.Style.STROKE);
         paint.setAntiAlias(true);
-        paint.setTextSize(dpToPx(12));
+        paint.setTextSize(dpToPx(10));
         paint.setTextAlign(Paint.Align.CENTER);
 
         //阴影画笔
@@ -186,7 +186,7 @@ public class JLineChart extends View {
         try {
             paint.setStyle(Paint.Style.FILL);
             if (listData.size() == 0) {
-                canvas.drawText("还没有任何数据哦", width / 2 - padding / 2, height / 2, paint);
+                canvas.drawText("还没有任何数据哦", (width + padding) / 2, (height + padding) / 2, paint);
                 return;
             }
 
@@ -229,7 +229,7 @@ public class JLineChart extends View {
             float itemY = (height - padding * 3 / 2) / (countY);//每等份的高度
             int location = 0;
             for (int item = 0; item < values.length; item++) {
-                float pointX = padding/2;
+                float pointX = padding / 2;
                 float pointY = height - itemY * (location++);
 
                 //文字
@@ -270,7 +270,7 @@ public class JLineChart extends View {
                 path.reset();
 
                 //画文字
-                canvas.drawText(key + labelX, (tempWidth - destance / 2), height + padding / 2, paint);
+                canvas.drawText(key + labelX, (tempWidth - destance / 2), height + padding / 3, paint);
             }
 
             //添加折线图的路径
