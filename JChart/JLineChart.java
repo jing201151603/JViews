@@ -1,38 +1,28 @@
 package com.dxhj.tianlang.views;
 
 import android.content.Context;
-import android.content.Intent;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.DashPathEffect;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PathEffect;
-import android.graphics.Rect;
-import android.text.TextUtils;
+import android.support.annotation.NonNull;
 import android.util.AttributeSet;
 import android.util.TypedValue;
-import android.view.GestureDetector;
 import android.view.MotionEvent;
 import android.view.View;
-
 import com.dxhj.tianlang.utils.LogUtils;
-
 import java.text.DecimalFormat;
 import java.text.ParseException;
-import java.text.ParsePosition;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
-import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.TreeMap;
-import java.util.TreeSet;
-import java.util.Vector;
 
 /**
  * author: 陈永镜 .
@@ -59,7 +49,7 @@ public class JLineChart extends View {
     private float unitY = 0.05f;//y轴上的间隔单位
     private String labelX = "月";
     private String labelY = "%";
-    private Map<Integer, Integer> months = new TreeMap<>();
+    private Map<Integer, Integer> months = new LinkedHashMap<>();
     private int lineColor = Color.BLACK;//线的颜色
     private int lineColorGray = Color.GRAY;//线的颜色
     private int lineChartColor = Color.RED;//折线的颜色、字体的颜色
@@ -70,6 +60,11 @@ public class JLineChart extends View {
     private boolean canTouch = true;
     private int blackColor = Color.BLACK;
 
+    private int move = 1, zoom = 2;//分移动和缩放两种模式
+    private int mode = move;//默认是移动
+    private double scale = 1;    //当前的放大倍数
+    private static final int scale_max = 10;    //scale的最大值
+    private static final int scale_min = 1;        //scale的最小值
 
     public JLineChart(Context context) {
         this(context, null);
@@ -161,17 +156,16 @@ public class JLineChart extends View {
      * 默认显示月份
      *
      * @param listData
-     * @param isShowInt
+     * @param isShowInt y轴是否显示整形
      * @param isYear    true 显示年份
      */
     public void setDatas(List<JPoint> listData, boolean isShowInt, boolean isYear) {
-        if (isShowInt) LogUtils.w(getClass().getName(), "累计收益率：" + listData);
-        else LogUtils.w(getClass().getName(), "净值走势：" + listData);
         if (listData.size() <= 0) return;
-        maxY = minY = listData.get(0).getPointY();
         this.listData.clear();
         this.isShowInt = isShowInt;
         LogUtils.w(getClass().getName(), "listdata=" + listData.size());
+
+        //将数据倒序
         for (int i = listData.size() - 1; i >= 0; i--) {
             JPoint jPoint = listData.get(i);
             int key = 0;
@@ -187,46 +181,126 @@ public class JLineChart extends View {
                 months.put(key, months.get(key).intValue() + 1);
             else
                 months.put(key, 1);
-            float temp = jPoint.getPointY();
-            if (temp > maxY) maxY = temp;
-            if (temp < minY) minY = temp;
+
             this.listData.add(jPoint);
         }
         invalidate();
 
     }
 
+    private float getMaxY(List<JPoint> listData) {
+        float maxY = listData.get(0).getPointY();
+        for (JPoint jPoint : listData) {
+            float temp = jPoint.getPointY();
+            if (temp > maxY) maxY = temp;
+        }
+        return maxY;
+    }
 
-//    @Override
-//    public boolean onTouchEvent(MotionEvent event) {
-//        switch (event.getAction()) {
-//            case MotionEvent.ACTION_DOWN:
-//                touchX = event.getX();
-//                break;
-//            case MotionEvent.ACTION_MOVE:
-//                touchX = event.getX();
-//                break;
-//            case MotionEvent.ACTION_UP:
-//                break;
-//            case MotionEvent.ACTION_CANCEL:
-//                break;
-//        }
-//        LogUtils.w(getClass().getName(), "touchX=" + touchX);
-//        if (canTouch)
-//            invalidate();
-//        return true;//表示事件由自己处理
-//    }
+    private float getMinY(List<JPoint> listData) {
+        float minY = listData.get(0).getPointY();
+        for (JPoint jPoint : listData) {
+            float temp = jPoint.getPointY();
+            if (temp < minY) minY = temp;
+        }
+        return minY;
+    }
 
     private OnTouchListener onTouchListener = new OnTouchListener() {
         @Override
         public boolean onTouch(View view, MotionEvent motionEvent) {
-
-            touchX = motionEvent.getX();
+            switch (motionEvent.getAction() & MotionEvent.ACTION_MASK) {
+                // 多点触摸
+                case MotionEvent.ACTION_POINTER_DOWN://多指按下
+                    mode = zoom;
+                    break;
+                case MotionEvent.ACTION_DOWN://单指按下
+                    break;
+                case MotionEvent.ACTION_MOVE://单指或多指移动
+//                    LogUtils.w(getClass().getName(), mode == move ? "move" : "zoom");
+                    if (mode == move) {//移动模式
+                        touchX = motionEvent.getX();
+                    } else if (mode == zoom) {//缩放模式
+                        zoom(motionEvent);
+                    }
+                    break;
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                case MotionEvent.ACTION_POINTER_UP:
+                    mode = move;
+                    break;
+            }
             if (canTouch)
                 invalidate();
             return true;
         }
     };
+
+    private double beforeLength = 0, afterLength = 0;    // 两触点距离
+
+    private void zoom(MotionEvent event) {
+        afterLength = getDistance(event);// 获取两点的距离
+        double gapLenght = afterLength - beforeLength;// 变化的长度
+        if (Math.abs(gapLenght) > 5f && listData.size() != 0) {
+            double scale_temp = afterLength / beforeLength;// 求的缩放的比例
+            double middleX = getMiddleX(event);    //中点x坐标
+            resetPoints(scale_temp, middleX);    //重设置
+//            this.invalidate();    //重新绘制
+            beforeLength = afterLength;
+        }
+    }
+
+    /**
+     * 重新设置点
+     *
+     * @param scale_temp
+     * @param middleX
+     */
+    private void resetPoints(double scale_temp, double middleX) {
+
+        /**
+         * 缩放比例在最小比例和最大比例范围内
+         */
+        if (scale * scale_temp >= scale_max) {
+            scale_temp = scale_max / scale;
+            scale = scale_max;
+        } else if (scale * scale_temp <= scale_min) {
+            scale_temp = scale_min / scale;
+            scale = scale_min;
+        } else {
+            scale = scale * scale_temp;
+        }
+        LogUtils.w(getClass().getName(), "scale=" + scale);
+
+        double midX = middleX * listData.size() / (width - padding * 3 / 2);
+
+        /**
+         * 重新设置points_temp的值
+         */
+        for (int i = 0; i < listData.size(); i++) {
+            double tempX = listData.get(i).getPointX();
+//            listData.get(i).setPointX(midX - (midX - tempX) * scale_temp);
+        }
+
+    }
+
+    /**
+     * @param event
+     * @return 得到视图的x坐标中点
+     */
+    private double getMiddleX(MotionEvent event) {
+        return (event.getX(1) + event.getX(0)) / 2;
+    }
+
+    /**
+     * @param event
+     * @return 获取两手指之间的距离
+     */
+    private double getDistance(MotionEvent event) {
+        double x = event.getX(0) - event.getX(1);
+        double y = event.getY(0) - event.getY(1);
+        return Math.sqrt(x * x + y * y);
+    }
 
     @Override
     protected void onDraw(Canvas canvas) {
@@ -241,142 +315,29 @@ public class JLineChart extends View {
             }
 
             //绘画X轴和Y轴
-            paint.setColor(lineColor);
-            canvas.drawLine(padding, height, width, height, paint);//画X轴
-            canvas.drawLine(padding, height, padding, padding, paint);//画Y轴
-            paint.setColor(lineColorGray);
-            int temp = dpToPx(3);
-            //画Y轴上的箭头
-            path.moveTo(padding, padding - temp);
-            path.lineTo(temp + padding, temp + padding);
-            path.lineTo(padding - temp, padding + temp);
-            path.close();
-            canvas.drawPath(path, paint);
-            path.reset();
-            //画X轴上的箭头
-            path.moveTo(width + temp, height);
-            path.lineTo(width - temp, height + temp);
-            path.lineTo(width - temp, height - temp);
-            path.close();
-            canvas.drawPath(path, paint);
-            path.reset();
+            drawXYAxle(canvas);
 
             //设置最大值和最小值
+            maxY = getMaxY(listData);
+            minY = getMinY(listData);
             float maxY = this.maxY + (this.maxY - this.minY) / 16;//上线和下线空出4/16空间
             float minY = this.minY - (this.maxY - this.minY) / 16;
-            countY = 4;//固定设置Y轴为4份
-            String[] values = new String[5];
-            values[0] = format2(minY + "");
-            values[4] = format2(maxY + "");
-            values[2] = format2((maxY + minY) / 2 + "");
-            values[1] = format2((Float.valueOf(values[0]) + Float.valueOf(values[2])) / 2 + "");
-            values[3] = format2((Float.valueOf(values[4]) + Float.valueOf(values[2])) / 2 + "");
-            unitY = (maxY - minY) / countY;//计算item的高度对应的数值
+            String[] values = setUnitY(maxY, minY);//设置Y轴单位高度
 
             //Y坐标label、Y轴平分
-            paint.setColor(lineChartColor);
-            float itemY = (height - padding * 3 / 2) / (countY);//每等份的高度
-            int location = 0;
-            for (int item = 0; item < values.length; item++) {
-                float pointX = padding / 2;
-                float pointY = height - itemY * (location++);
-
-                //文字
-                if (isShowInt)
-                    canvas.drawText(format(values[item] + "") + labelY, pointX, pointY, paint);
-                else
-                    canvas.drawText(format2(values[item] + "") + "", pointX, pointY, paint);
-
-                //画线
-                if (item > 0) {
-                    Path path = new Path();
-                    path.moveTo(padding, height - itemY * (item));
-                    path.lineTo(width, height - itemY * (item));
-                    canvas.drawPath(path, paintEffect);
-                    path.reset();
-                }
-            }
+            drawYLabelLine(canvas, values);
 
             //绘画X轴的线和文字
-            int total = 0;
-            for (Integer value : months.values())
-                total += value;
-            countX = months.values().size();//X轴份几份
-            float tempWidth = padding;
-            Iterator<Integer> iterator = months.keySet().iterator();
-            for (int i = 0; i < countX; i++) {
-                int key = iterator.next();
-                int value = months.get(key);
-                float destance = distance * value / total;
-                tempWidth += destance;
-
-                //画线
-                Path path = new Path();
-                path.moveTo(tempWidth, height);
-                path.lineTo(tempWidth, padding);
-                canvas.drawPath(path, paintEffect);
-                path.reset();
-
-                //画文字
-                canvas.drawText(key + labelX, (tempWidth - destance / 2), height + padding / 3, paint);
-            }
+            drawXLabelLine(canvas, distance);
 
             //添加折线图的路径
-            float itemWidth = distance / listData.size();
-            for (int i = 0; i < listData.size(); i++) {
-                JPoint jPoint = listData.get(i);
-
-                float endX = padding + (i + 1) * itemWidth;
-                float endY = (height - (jPoint.getPointY() - minY) / (unitY) * ((height - padding * 3 / 2) / countY));
-
-                listData.get(i).setLastY(endY);
-                listData.get(i).setLastX(endX);
-
-                if (i == 0) {
-                    path.moveTo(padding, endY);//该点是虚拟的点
-                    path.lineTo(endX, endY);
-                    continue;
-                }
-                path.lineTo(endX, endY);
-
-            }
-            //画折线图
-            paint.setStyle(Paint.Style.STROKE);
-            canvas.drawPath(path, paint);
+            float itemWidth = drawLineChart(canvas, distance, minY);
 
             //画阴影
-            if (isShowShade) {
-                path.lineTo(padding + (listData.size()) * itemWidth, height);//添加最后一点到垂直向下的线
-                path.lineTo(padding, height);//添加原点
-                path.close();//闭合折线
-                canvas.drawPath(path, paintShade);//绘画阴影
-            }
-            path.reset();//重置
+            drawShade(canvas, itemWidth);
 
-            if (!canTouch) return;
-            if (touchX < padding) touchX = padding;
-            if (touchX > distance + padding) touchX = distance + padding;
-            canvas.drawLine(touchX, height, touchX, padding, paintTouch);
-            JPoint lastPoint = null;
-            for (int i = 0; i < listData.size(); i++) {
-                JPoint jPoint = listData.get(i);
-                if (jPoint.getLastX() >= touchX) {
-                    lastPoint = listData.get(i);
-                    break;
-                }
-            }
-
-            paint.setStyle(Paint.Style.FILL);
-            paint.setColor(blackColor);
-            if (lastPoint != null) {
-                if (onJLineChatTouchListener != null)//触发监听
-                    onJLineChatTouchListener.onTouch(lastPoint, this);
-
-//                canvas.drawText("日期:"+formatDate(lastPoint.getPointX())+" , 收益率:"+lastPoint.getPointY(),padding+distance/2,height+padding*3/4,paint);
-            }
-
-            canvas.drawCircle(padding - dpToPx(5), height + padding * 3 / 4 - dpToPx(5), dpToPx(2.5f), paint);
-            canvas.drawText("近" + months.values().size() + labelX, padding + dpToPx(12), height + padding * 3 / 4, paint);
+            //绘画描述文字和监听
+            if (describeListener(canvas, distance)) return;
 
 
         } catch (NumberFormatException e) {
@@ -384,6 +345,154 @@ public class JLineChart extends View {
         }
 
 
+    }
+
+    private boolean describeListener(Canvas canvas, float distance) {
+        if (!canTouch) return true;
+        if (touchX < padding) touchX = padding;
+        if (touchX > distance + padding) touchX = distance + padding;
+        canvas.drawLine(touchX, height, touchX, padding, paintTouch);
+        JPoint lastPoint = null;
+        for (int i = 0; i < listData.size(); i++) {
+            JPoint jPoint = listData.get(i);
+            if (jPoint.getLastX() >= touchX) {
+                lastPoint = listData.get(i);
+                break;
+            }
+        }
+
+        paint.setStyle(Paint.Style.FILL);
+        paint.setColor(blackColor);
+        if (lastPoint != null) {
+            if (onJLineChatTouchListener != null)//触发监听
+                onJLineChatTouchListener.onTouch(lastPoint, this);
+
+//                canvas.drawText("日期:"+formatDate(lastPoint.getPointX())+" , 收益率:"+lastPoint.getPointY(),padding+distance/2,height+padding*3/4,paint);
+        }
+
+        canvas.drawCircle(padding - dpToPx(5), height + padding * 3 / 4 - dpToPx(5), dpToPx(2.5f), paint);
+        canvas.drawText("近" + months.values().size() + labelX, padding + dpToPx(12), height + padding * 3 / 4, paint);
+        return false;
+    }
+
+    private void drawShade(Canvas canvas, float itemWidth) {
+        if (isShowShade) {
+            path.lineTo(padding + (listData.size()) * itemWidth, height);//添加最后一点到垂直向下的线
+            path.lineTo(padding, height);//添加原点
+            path.close();//闭合折线
+            canvas.drawPath(path, paintShade);//绘画阴影
+        }
+        path.reset();//重置
+    }
+
+    private float drawLineChart(Canvas canvas, float distance, float minY) {
+        float itemWidth = distance / listData.size();
+        for (int i = 0; i < listData.size(); i++) {
+            JPoint jPoint = listData.get(i);
+
+            float endX = padding + (i + 1) * itemWidth;
+            float endY = (height - (jPoint.getPointY() - minY) / (unitY) * ((height - padding * 3 / 2) / countY));
+
+            listData.get(i).setLastY(endY);
+            listData.get(i).setLastX(endX);
+
+            if (i == 0) {
+                path.moveTo(padding, endY);//该点是虚拟的点
+                path.lineTo(endX, endY);
+                continue;
+            }
+            path.lineTo(endX, endY);
+
+        }
+        //画折线图
+        paint.setStyle(Paint.Style.STROKE);
+        canvas.drawPath(path, paint);
+        return itemWidth;
+    }
+
+    private void drawXLabelLine(Canvas canvas, float distance) {
+        int total = 0;
+        for (Integer value : months.values())
+            total += value;
+        countX = months.values().size();//X轴份几份
+        float tempWidth = padding;
+        Iterator<Integer> iterator = months.keySet().iterator();
+        for (int i = 0; i < countX; i++) {
+            int key = iterator.next();
+            int value = months.get(key);
+            float destance = distance * value / total;
+            tempWidth += destance;
+
+            //画线
+            Path path = new Path();
+            path.moveTo(tempWidth, height);
+            path.lineTo(tempWidth, padding);
+            canvas.drawPath(path, paintEffect);
+            path.reset();
+
+            //画文字
+            canvas.drawText(key + labelX, (tempWidth - destance / 2), height + padding / 3, paint);
+        }
+    }
+
+    private void drawYLabelLine(Canvas canvas, String[] values) {
+        paint.setColor(lineChartColor);
+        float itemY = (height - padding * 3 / 2) / (countY);//每等份的高度
+        int location = 0;
+        for (int item = 0; item < values.length; item++) {
+            float pointX = padding / 2;
+            float pointY = height - itemY * (location++);
+
+            //文字
+            if (isShowInt)
+                canvas.drawText(format(values[item] + "") + labelY, pointX, pointY, paint);
+            else
+                canvas.drawText(format2(values[item] + "") + "", pointX, pointY, paint);
+
+            //画线
+            if (item > 0) {
+                Path path = new Path();
+                path.moveTo(padding, height - itemY * (item));
+                path.lineTo(width, height - itemY * (item));
+                canvas.drawPath(path, paintEffect);
+                path.reset();
+            }
+        }
+    }
+
+    @NonNull
+    private String[] setUnitY(float maxY, float minY) {
+        countY = 4;//固定设置Y轴为4份
+        String[] values = new String[5];
+        values[0] = format2(minY + "");
+        values[4] = format2(maxY + "");
+        values[2] = format2((maxY + minY) / 2 + "");
+        values[1] = format2((Float.valueOf(values[0]) + Float.valueOf(values[2])) / 2 + "");
+        values[3] = format2((Float.valueOf(values[4]) + Float.valueOf(values[2])) / 2 + "");
+        unitY = (maxY - minY) / countY;//计算item的高度对应的数值
+        return values;
+    }
+
+    private void drawXYAxle(Canvas canvas) {
+        paint.setColor(lineColor);
+        canvas.drawLine(padding, height, width, height, paint);//画X轴
+        canvas.drawLine(padding, height, padding, padding, paint);//画Y轴
+        paint.setColor(lineColorGray);
+        int temp = dpToPx(3);
+        //画Y轴上的箭头
+        path.moveTo(padding, padding - temp);
+        path.lineTo(temp + padding, temp + padding);
+        path.lineTo(padding - temp, padding + temp);
+        path.close();
+        canvas.drawPath(path, paint);
+        path.reset();
+        //画X轴上的箭头
+        path.moveTo(width + temp, height);
+        path.lineTo(width - temp, height + temp);
+        path.lineTo(width - temp, height - temp);
+        path.close();
+        canvas.drawPath(path, paint);
+        path.reset();
     }
 
     public interface OnJLineChatTouchListener {
